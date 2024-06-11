@@ -178,10 +178,8 @@ class Text2SemanticDecoder(nn.Module):
 
         A_logits, R_logits = get_batch_logps(logits, reject_logits, targets, reject_targets)
         loss_2, _, _ = dpo_loss(A_logits, R_logits, 0, 0, 0.2, reference_free=True)
-        
-        loss = loss_1 + loss_2
 
-        return loss, acc
+        return logits, targets, A_logits, R_logits
 
     def forward_old(self, x, x_lens, y, y_lens, bert_feature):
         """
@@ -243,7 +241,7 @@ class Text2SemanticDecoder(nn.Module):
         # from feiteng: 每次 duration 越多, 梯度更新也应该更多, 所以用 sum
         loss = nn.losses.cross_entropy(logits, targets, reduction="sum")
         acc = self.ar_accuracy_metric(torch.tensor(np.array(logits)), torch.tensor(np.array(targets))).item()
-        return loss, acc
+        return logits, targets
 
     # 需要看下这个函数和 forward 的区别以及没有 semantic 的时候 prompts 输入什么
     def infer(

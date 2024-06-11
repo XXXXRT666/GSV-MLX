@@ -15,7 +15,6 @@ class WarmupCosineLRSchedule(torch.optim.lr_scheduler._LRScheduler):
 
     def __init__(
         self,
-        optimizer,
         init_lr,
         peak_lr,
         end_lr,
@@ -26,20 +25,18 @@ class WarmupCosineLRSchedule(torch.optim.lr_scheduler._LRScheduler):
         self.init_lr = init_lr
         self.peak_lr = peak_lr
         self.end_lr = end_lr
-        self.optimizer = optimizer
         self._warmup_rate = (peak_lr - init_lr) / warmup_steps
         self._decay_rate = (end_lr - peak_lr) / (total_steps - warmup_steps)
         self._current_step = current_step
         self.lr = init_lr
         self.warmup_steps = warmup_steps
         self.total_steps = total_steps
-        self._last_lr = [self.lr]
+        self.last_lr = [self.lr]
+        self.lr_group = {"lr":self.lr}
 
     def set_lr(self, lr):
-        self._last_lr = [g["lr"] for g in self.optimizer.param_groups]
-        for g in self.optimizer.param_groups:
-            # g['lr'] = lr
-            g["lr"] = self.end_lr  ###锁定用线性
+        self.last_lr = self.lr_group["lr"]
+        self.lr_group["lr"] = self.end_lr  ###锁定用线性
 
     def step(self):
         if self._current_step < self.warmup_steps:

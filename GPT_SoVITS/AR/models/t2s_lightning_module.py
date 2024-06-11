@@ -2,15 +2,22 @@
 # reference: https://github.com/lifeiteng/vall-e
 import os, sys
 
+import mlx.optimizers
+
 now_dir = os.getcwd()
 sys.path.append(now_dir)
-from typing import Dict
-
+from typing import Dict, Tuple
+import mlx
 import torch
 from pytorch_lightning import LightningModule
 from AR.models.t2s_model import Text2SemanticDecoder
 from AR.modules.lr_schedulers import WarmupCosineLRSchedule
 from AR.modules.optim import ScaledAdam
+from AR.models.utils import dpo_loss
+import mlx.nn as nn
+import mlx.core as mx
+import numpy as np
+from mlx.utils import tree_flatten
 
 class Text2SemanticLightningModule(LightningModule):
     def __init__(self, config, output_dir, is_train=True):
@@ -34,44 +41,22 @@ class Text2SemanticLightningModule(LightningModule):
 
     def training_step(self, batch: Dict, batch_idx: int):
         opt = self.optimizers()
-        scheduler = self.lr_schedulers()
-        forward=self.model.forward if self.config["train"].get("if_dpo",False)==True else self.model.forward_old
-        loss, acc = forward(
+        self.scheduler = self.lr_schedulers()
+        loss_fn = self.loss_fn_dpo if self.config["train"].get("if_dpo",False)==True else self.loss_fn_old
+        input_batch = (
             batch["phoneme_ids"],
             batch["phoneme_ids_len"],
             batch["semantic_ids"],
             batch["semantic_ids_len"],
             batch["bert_feature"],
         )
-        self.manual_backward(loss)
-        if batch_idx > 0 and batch_idx % 4 == 0:
-            opt.step()
-            opt.zero_grad()
-            scheduler.step()
+        loss_and_grad_fn = nn.value_and_grad(self.model, loss_fn)
+        loss, grads = loss_and_grad_fn(self.model, input_batch)
 
-        self.log(
-            "total_loss",
-            loss,
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
-        self.log(
-            "lr",
-            scheduler.get_last_lr()[0],
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
-        self.log(
-            f"top_{self.top_k}_acc",
-            acc,
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
+        if batch_idx > 0 and batch_idx % 4 == 0:
+            opt.update(self.model, grads)
+            mx.eval(self.model.parameters(), opt.state)
+
 
     def validation_step(self, batch: Dict, batch_idx: int):
         return
@@ -111,26 +96,20 @@ class Text2SemanticLightningModule(LightningModule):
     # torch.save(pred_semantic.detach().cpu(), save_path)
 
     def configure_optimizers(self):
-        model_parameters = self.model.parameters()
+        model_parameters = self.model.trainable_parameters()
         parameters_names = []
         parameters_names.append(
-            [name_param_pair[0] for name_param_pair in self.model.named_parameters()]
+            [name_param_pair[0] for name_param_pair in tree_flatten(self.model.trainable_parameters(),prefix=".self.model")]
         )
-        lm_opt = ScaledAdam(
-            model_parameters,
-            lr=0.01,
+        lm_opt = mlx.optimizers.Adamax(
+            learning_rate=0.01,
             betas=(0.9, 0.95),
-            clipping_scale=2.0,
-            parameters_names=parameters_names,
-            show_dominant_parameters=False,
-            clipping_update_period=1000,
         )
 
         return {
             "optimizer": lm_opt,
             "lr_scheduler": {
                 "scheduler": WarmupCosineLRSchedule(
-                    lm_opt,
                     init_lr=self.config["optimizer"]["lr_init"],
                     peak_lr=self.config["optimizer"]["lr"],
                     end_lr=self.config["optimizer"]["lr_end"],
@@ -139,3 +118,64 @@ class Text2SemanticLightningModule(LightningModule):
                 )
             },
         }
+
+
+    def loss_fn_dpo(self, input_batch):
+        logits, targets ,A_logits, R_logits=self.model(*input_batch)
+        loss_1 = nn.losses.cross_entropy(
+            logits.transpose(0, 2, 1), targets, reduction="sum"
+            )
+        loss_2, _, _ = dpo_loss(
+            A_logits, R_logits, 0, 0, 0.2, reference_free=True
+            )
+        acc = self.acc_dpo(self, logits, targets)
+        self.log_(loss_1 + loss_2, acc)
+        return loss_1 + loss_2
+
+    def loss_fn_old(self,input_batch):
+        logits, targets = self.model.forward_old(*input_batch)
+        loss = nn.losses.cross_entropy(
+            logits, targets, reduction="sum"
+            )
+        acc = self.acc_old(self, logits, targets)
+        self.log_(loss, acc)   
+        return loss
+
+    def acc_dpo(self:Text2SemanticDecoder, logits, targets):
+        acc = self.ar_accuracy_metric(
+            torch.tensor(np.array(logits.transpose(0, 2, 1))), torch.tensor(np.array(targets))
+            ).item()
+        return acc
+
+    def acc_old(self:Text2SemanticDecoder, logits, targets):
+        acc = self.ar_accuracy_metric(
+            torch.tensor(np.array(logits)), torch.tensor(np.array(targets))
+            ).item()
+        return acc
+    
+    def log_(self, loss, acc):
+
+        self.log(
+                "total_loss",
+                loss,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+        )
+        self.log(
+                "lr",
+                self.scheduler.last_lr()[0],
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+        )
+        self.log(
+                f"top_{self.top_k}_acc",
+                acc,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+        )
+        return

@@ -204,12 +204,12 @@ def sample(
     idx_next = multinomial_sample_one_no_sync(probs)
     return idx_next, probs
 
-def dpo_loss(policy_chosen_logps: torch.FloatTensor,
-             policy_rejected_logps: torch.FloatTensor,
-             reference_chosen_logps: torch.FloatTensor,
-             reference_rejected_logps: torch.FloatTensor,
+def dpo_loss(policy_chosen_logps: mx.array,
+             policy_rejected_logps: mx.array,
+             reference_chosen_logps: mx.array,
+             reference_rejected_logps: mx.array,
              beta: float,
-             reference_free: bool = False) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+             reference_free: bool = False) -> Tuple[mx.array, mx.array, mx.array]:
     pi_logratios = policy_chosen_logps - policy_rejected_logps
     ref_logratios = reference_chosen_logps - reference_rejected_logps
 
