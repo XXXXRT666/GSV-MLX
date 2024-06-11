@@ -62,7 +62,7 @@ if os.path.exists(txt_path) == False:
 
     def get_bert_feature(text, word2ph):
         with torch.no_grad():
-            inputs = tokenizer(text, return_tensors="pt")
+            inputs = tokenizer(text, return_tensors="np")
             for i in inputs:
                 inputs[i] = inputs[i].to(device)
             res = bert_model(**inputs, output_hidden_states=True)
@@ -85,7 +85,7 @@ if os.path.exists(txt_path) == False:
                 phones, word2ph, norm_text = clean_text(
                     text.replace("%", "-").replace("￥", ","), lan
                 )
-                path_bert = "%s/%s.pt" % (bert_dir, name)
+                path_bert = "%s/%s.npy" % (bert_dir, name)
                 if os.path.exists(path_bert) == False and lan == "zh":
                     bert_feature = get_bert_feature(norm_text, word2ph)
                     assert bert_feature.shape[-1] == len(phones)

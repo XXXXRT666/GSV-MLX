@@ -3,6 +3,48 @@
 import torch
 import torch.nn.functional as F
 from typing import Tuple
+import mlx.core as mx
+import mlx.nn as nn
+import copy
+import numpy as np
+
+
+def scatter(self:mx.array, dim:int, index:mx.array, src:mx.array) -> mx.array:
+    """
+    Writes all values from the tensor src into self at the indices specified in the index tensor.
+
+    Args:
+    self (mx.array): The destination tensor.
+    index (np.ndarray): The tensor containing indices to write values to self.
+    src (np.ndarray): The source tensor.
+    dim (int): The dimension along which to scatter.
+
+    Returns:
+    np.ndarray: The updated self tensor.
+    """
+    assert self.ndim == index.ndim == src.ndim, "self, index, and src must have the same number of dimensions"
+    assert index.shape[dim] <= src.shape[dim], "index.size(dim) must be less than or equal to src.size(dim)"
+    
+    if dim == 0:
+        for i in range(index.shape[0]):
+            for j in range(index.shape[1]):
+                for k in range(index.shape[2]):
+                    self[index[i, j, k], j, k] = src[i, j, k]
+    elif dim == 1:
+        for i in range(index.shape[0]):
+            for j in range(index.shape[1]):
+                for k in range(index.shape[2]):
+                    self[i, index[i, j, k], k] = src[i, j, k]
+    elif dim == 2:
+        for i in range(index.shape[0]):
+            for j in range(index.shape[1]):
+                for k in range(index.shape[2]):
+                    self[i, j, index[i, j, k]] = src[i, j, k]
+    else:
+        raise ValueError("dim must be 0, 1, or 2")
+    
+    return self
+
 
 def sequence_mask(length, max_length=None):
     if max_length is None:
@@ -11,7 +53,7 @@ def sequence_mask(length, max_length=None):
     return x.unsqueeze(0) < length.unsqueeze(1)
 
 
-def make_pad_mask(lengths: torch.Tensor, max_len: int = 0) -> torch.Tensor:
+def make_pad_mask(lengths: mx.array, max_len: int = 0) -> mx.array:
     """
     Args:
       lengths:
@@ -33,10 +75,10 @@ def make_pad_mask(lengths: torch.Tensor, max_len: int = 0) -> torch.Tensor:
     assert lengths.ndim == 1, lengths.ndim
     max_len = max(max_len, lengths.max())
     n = lengths.size(0)
-    seq_range = torch.arange(0, max_len, device=lengths.device)
-    expaned_lengths = seq_range.unsqueeze(0).expand(n, max_len)
+    seq_range = mx.arange(0, max_len)
+    expaned_lengths = mx.tile(mx.expand_dims(seq_range, 0),(n, max_len))
 
-    return expaned_lengths >= lengths.unsqueeze(-1)
+    return expaned_lengths >= mx.expand_dims(lengths, -1)
 
 
 # https://github.com/microsoft/unilm/blob/master/xtune/src/transformers/modeling_utils.py
@@ -53,14 +95,14 @@ def top_k_top_p_filtering(
     From: https://gist.github.com/thomwolf/1a5a29f6962089e871b94cbd09daf317
     """
     if top_k > 0:
-        top_k = min(max(top_k, min_tokens_to_keep), logits.size(-1))  # Safety check
+        top_k = min(max(top_k, min_tokens_to_keep), logits.shspe[-1])  # Safety check
         # Remove all tokens with a probability less than the last token of the top-k
-        indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+        indices_to_remove = logits < mx.topk(logits, top_k)[0][..., -1, None]
         logits[indices_to_remove] = filter_value
 
     if top_p < 1.0:
-        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+        sorted_logits, sorted_indices = mx.sort(logits)[..., ::-1]
+        cumulative_probs = mx.cumsum(mx.softmax(sorted_logits, axis=-1), axis=-1)
 
         # Remove tokens with cumulative probability above the threshold (token with 0 are kept)
         sorted_indices_to_remove = cumulative_probs > top_p
@@ -68,11 +110,11 @@ def top_k_top_p_filtering(
             # Keep at least min_tokens_to_keep (set to min_tokens_to_keep-1 because we add the first one below)
             sorted_indices_to_remove[..., :min_tokens_to_keep] = 0
         # Shift the indices to the right to keep also the first token above the threshold
-        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+        sorted_indices_to_remove[..., 1:] = copy.deepcopy(sorted_indices_to_remove[..., :-1])
         sorted_indices_to_remove[..., 0] = 0
 
         # scatter sorted tensors to original indexing
-        indices_to_remove = sorted_indices_to_remove.scatter(
+        indices_to_remove = scatter(sorted_indices_to_remove,
             1, sorted_indices, sorted_indices_to_remove
         )
         logits[indices_to_remove] = filter_value
@@ -93,7 +135,7 @@ def topk_sampling(logits, top_k=10, top_p=1.0, temperature=1.0):
     # Top-p/top-k filtering
     logits = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
     # Sample
-    token = torch.multinomial(F.softmax(logits, dim=-1), num_samples=1)
+    token = mx.random.categorical(mx.softmax(logits, axis=-1), num_samples=1)
     return token
 
 
@@ -103,13 +145,14 @@ from typing import Optional, Tuple
 def multinomial_sample_one_no_sync(
     probs_sort,
 ):  # Does multinomial sampling without a cuda synchronization
-    q = torch.empty_like(probs_sort).exponential_(1)
-    return torch.argmax(probs_sort / q, dim=-1, keepdim=True).to(dtype=torch.int)
+    q = np.random.exponential(scale=1.0, size=probs_sort.shape)
+    q = mx.array(q)
+    return mx.argmax(probs_sort / q, axis=-1, keepdim=True).astype(mx.int32)
 
 
 def logits_to_probs(
     logits,
-    previous_tokens: Optional[torch.Tensor] = None,
+    previous_tokens: Optional[mx.array] = None,
     temperature: float = 1.0,
     top_k: Optional[int] = None,
     top_p: Optional[int] = None,
@@ -121,32 +164,32 @@ def logits_to_probs(
     # pdb.set_trace()
     if previous_tokens is not None and repetition_penalty != 1.0:
         previous_tokens = previous_tokens.long()
-        score = torch.gather(logits, dim=0, index=previous_tokens)
-        score = torch.where(
+        score = mx.take(logits, axis=0, indices=previous_tokens)
+        score = mx.where(
             score < 0, score * repetition_penalty, score / repetition_penalty
         )
-        logits.scatter_(dim=0, index=previous_tokens, src=score)
+        logits = scatter(logits, dim=0, index=previous_tokens, src=score)
 
     if top_p is not None and top_p < 1.0:
-        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-        cum_probs = torch.cumsum(
-            torch.nn.functional.softmax(sorted_logits, dim=-1), dim=-1
+        sorted_logits, sorted_indices = mx.sort(logits, descending=True)[..., ::-1]
+        cum_probs = mx.cumsum(
+            mx.softmax(sorted_logits, axis=-1), axis=-1
         )
         sorted_indices_to_remove = cum_probs > top_p
         sorted_indices_to_remove[0] = False  # keep at least one option
-        indices_to_remove = sorted_indices_to_remove.scatter(
+        indices_to_remove = scatter(sorted_indices_to_remove,
             dim=0, index=sorted_indices, src=sorted_indices_to_remove
         )
-        logits = logits.masked_fill(indices_to_remove, -float("Inf"))
+        logits = mx.where(indices_to_remove, -float("Inf"), logits)
 
     logits = logits / max(temperature, 1e-5)
 
     if top_k is not None:
-        v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-        pivot = v.select(-1, -1).unsqueeze(-1)
-        logits = torch.where(logits < pivot, -float("Inf"), logits)
+        v, _ = mx.topk(logits, min(top_k, logits.shape[-1]))
+        pivot = mx.expand_dims(v[..., -1], -1)
+        logits = mx.where(logits < pivot, -float("Inf"), logits)
 
-    probs = torch.nn.functional.softmax(logits, dim=-1)
+    probs = mx.softmax(logits, dim=-1)
     return probs
 
 
@@ -175,9 +218,9 @@ def dpo_loss(policy_chosen_logps: torch.FloatTensor,
 
     logits = pi_logratios - ref_logratios
 
-    losses = -F.logsigmoid(beta * logits)
-    chosen_rewards = beta * (policy_chosen_logps - reference_chosen_logps).detach()
-    rejected_rewards = beta * (policy_rejected_logps - reference_rejected_logps).detach()
+    losses = -nn.log_sigmoid(beta * logits)
+    chosen_rewards = beta * (policy_chosen_logps - reference_chosen_logps)
+    rejected_rewards = beta * (policy_rejected_logps - reference_rejected_logps)
 
     return losses.mean(), chosen_rewards, rejected_rewards
 
@@ -185,8 +228,8 @@ def get_batch_logps(logits_target: torch.FloatTensor, logits_reject: torch.Float
 
     # dummy token; we'll ignore the losses on these tokens later
 
-    per_token_logps_target = torch.gather(logits_target.log_softmax(-1), dim=2, index=labels_target.unsqueeze(2)).squeeze(2)
-    per_token_logps_reject = torch.gather(logits_reject.log_softmax(-1), dim=2, index=labels_reject.unsqueeze(2)).squeeze(2)
+    per_token_logps_target = mx.take(nn.log_softmax(logits_target, axis=-1), axis=2, indices=mx.expand_dims(labels_target, 2)).squeeze(2)
+    per_token_logps_reject = mx.take(nn.log_softmax(logits_reject, axis=-1), axis=2, indices=mx.expand_dims(labels_reject, 2)).squeeze(2)
 
     return per_token_logps_target.sum(-1), per_token_logps_reject.sum(-1)
 

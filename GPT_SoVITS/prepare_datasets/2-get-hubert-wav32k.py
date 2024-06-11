@@ -63,7 +63,7 @@ else:
 
 nan_fails=[]
 def name2go(wav_name,wav_path):
-    hubert_path="%s/%s.pt"%(hubert_dir,wav_name)
+    hubert_path="%s/%s.npy"%(hubert_dir,wav_name)
     if(os.path.exists(hubert_path)):return
     tmp_audio = load_audio(wav_path, 32000)
     tmp_max = np.abs(tmp_audio).max()

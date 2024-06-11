@@ -29,7 +29,7 @@ class CNHubert(nn.Module):
 
     def forward(self, x):
         input_values = self.feature_extractor(
-            x, return_tensors="pt", sampling_rate=16000
+            x, return_tensors="np", sampling_rate=16000
         ).input_values.to(x.device)
         feats = self.model(input_values)["last_hidden_state"]
         return feats

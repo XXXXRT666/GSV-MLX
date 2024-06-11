@@ -12,77 +12,41 @@ from typing import Union
 import torch
 from AR.modules.activation import MultiheadAttention
 from AR.modules.scaling import BalancedDoubleSwish
-from torch import nn
 from torch import Tensor
 from torch.nn import functional as F
+import mlx.core as mx
+import mlx.nn as nn
 
 _shape_t = Union[int, List[int], torch.Size]
 
 
 class LayerNorm(nn.Module):
-    __constants__ = ["normalized_shape", "eps", "elementwise_affine"]
-    normalized_shape: Tuple[int, ...]
     eps: float
-    elementwise_affine: bool
-
+    affine: bool
+    bias:bool
+    __constants__ = ["normalized_shape", "eps", "elementwise_affine"]
     def __init__(
         self,
         normalized_shape: _shape_t,
         eps: float = 1e-5,
         elementwise_affine: bool = True,
-        device=None,
-        dtype=None,
+        bias: bool =True,
     ) -> None:
-        factory_kwargs = {"device": device, "dtype": dtype}
         super(LayerNorm, self).__init__()
-        if isinstance(normalized_shape, numbers.Integral):
-            # mypy error: incompatible types in assignment
-            normalized_shape = (normalized_shape,)  # type: ignore[assignment]
-        self.normalized_shape = tuple(normalized_shape)  # type: ignore[arg-type]
-        self.eps = eps
-        self.elementwise_affine = elementwise_affine
-        if self.elementwise_affine:
-            self.weight = nn.Parameter(
-                torch.empty(self.normalized_shape, **factory_kwargs)
-            )
-            self.bias = nn.Parameter(
-                torch.empty(self.normalized_shape, **factory_kwargs)
-            )
-        else:
-            self.register_parameter("weight", None)
-            self.register_parameter("bias", None)
+        self._normalized_shape = normalized_shape
+        self._eps = eps
+        self._affine = elementwise_affine
+        self.bias = bias
+        self.LayerNorm = nn.LayerNorm(normalized_shape,eps,elementwise_affine,bias)
 
-        self.reset_parameters()
 
-    def reset_parameters(self) -> None:
-        if self.elementwise_affine:
-            nn.init.ones_(self.weight)
-            nn.init.zeros_(self.bias)
-
-    def forward(self, input: Tensor, embedding: Any = None) -> Tensor:
+    def __call__(self, input:mx.array, embedding: Any = None) -> mx.array:
         if isinstance(input, tuple):
             input, embedding = input
-            return (
-                F.layer_norm(
-                    input,
-                    self.normalized_shape,
-                    self.weight,
-                    self.bias,
-                    self.eps,
-                ),
-                embedding,
-            )
+            return (self.LayerNorm(input),embedding)
 
         assert embedding is None
-        return F.layer_norm(
-            input, self.normalized_shape, self.weight, self.bias, self.eps
-        )
-
-    def extra_repr(self) -> str:
-        return (
-            "{normalized_shape}, eps={eps}, "
-            "elementwise_affine={elementwise_affine}".format(**self.__dict__)
-        )
+        return self.LayerNorm(input)
 
 
 class IdentityNorm(nn.Module):
@@ -90,12 +54,10 @@ class IdentityNorm(nn.Module):
         self,
         d_model: int,
         eps: float = 1e-5,
-        device=None,
-        dtype=None,
     ) -> None:
         super(IdentityNorm, self).__init__()
 
-    def forward(self, input: Tensor, embedding: Any = None) -> Tensor:
+    def _call__(self, input: mx.array, embedding: Any = None) -> mx.array:
         if isinstance(input, tuple):
             return input
 
@@ -128,15 +90,16 @@ class TransformerEncoder(nn.Module):
         self.layers = _get_clones(encoder_layer, num_layers)
         self.num_layers = num_layers
         self.norm = norm
+        self.freeze(keys=self.__constants__)
 
-    def forward(
+    def __call__(
         self,
-        src: Tensor,
-        mask: Optional[Tensor] = None,
-        src_key_padding_mask: Optional[Tensor] = None,
+        src: mx.array,
+        mask: Optional[mx.array] = None,
+        src_key_padding_mask: Optional[mx.array] = None,
         return_layer_states: bool = False,
         cache=None,
-    ) -> Tensor:
+    ) -> mx.array:
         r"""Pass the input through the encoder layers in turn.
 
         Args:
@@ -189,10 +152,9 @@ class TransformerEncoderLayer(nn.Module):
         nhead: int,
         dim_feedforward: int = 2048,
         dropout: float = 0.1,
-        activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
+        activation: Union[str, Callable[[mx.array], mx.array]] = nn.relu,
         batch_first: bool = False,
         norm_first: bool = False,
-        device=None,
         dtype=None,
         linear1_self_attention_cls: nn.Module = nn.Linear,
         linear2_self_attention_cls: nn.Module = nn.Linear,
@@ -202,11 +164,7 @@ class TransformerEncoderLayer(nn.Module):
         layer_norm_eps: float = 1e-5,
         adaptive_layer_norm=False,
     ) -> None:
-        factory_kwargs = {"device": device, "dtype": dtype}
         super(TransformerEncoderLayer, self).__init__()
-        # print(233333333333,d_model,nhead)
-        # import os
-        # os._exit(2333333)
         self.self_attn = MultiheadAttention(
             d_model,  # 512 16
             nhead,
@@ -214,45 +172,25 @@ class TransformerEncoderLayer(nn.Module):
             batch_first=batch_first,
             linear1_cls=linear1_self_attention_cls,
             linear2_cls=linear2_self_attention_cls,
-            **factory_kwargs,
         )
 
         # Implementation of Feedforward model
         self.linear1 = linear1_feedforward_cls(
-            d_model, dim_feedforward, **factory_kwargs
+            d_model, dim_feedforward
         )
         self.dropout = nn.Dropout(dropout)
         self.linear2 = linear2_feedforward_cls(
-            dim_feedforward, d_model, **factory_kwargs
+            dim_feedforward, d_model
         )
 
         self.norm_first = norm_first
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
-
-        # Legacy string support for activation function.
-        if isinstance(activation, str):
-            activation = _get_activation_fn(activation)
-        elif isinstance(activation, partial):
-            activation = activation(d_model)
-        elif activation == BalancedDoubleSwish:
-            activation = BalancedDoubleSwish(d_model)
-
-        # # We can't test self.activation in forward() in TorchScript,
-        # # so stash some information about it instead.
-        # if activation is F.relu or isinstance(activation, torch.nn.ReLU):
-        #     self.activation_relu_or_gelu = 1
-        # elif activation is F.gelu or isinstance(activation, torch.nn.GELU):
-        #     self.activation_relu_or_gelu = 2
-        # else:
-        #     self.activation_relu_or_gelu = 0
+        self.freeze(keys=self.__constants__)
         self.activation = activation
 
-        norm1 = layer_norm_cls(d_model, eps=layer_norm_eps, **factory_kwargs)
-        if layer_norm_cls == IdentityNorm:
-            norm2 = BalancedBasicNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
-        else:
-            norm2 = layer_norm_cls(d_model, eps=layer_norm_eps, **factory_kwargs)
+        norm1 = layer_norm_cls(d_model, eps=layer_norm_eps)
+        norm2 = layer_norm_cls(d_model, eps=layer_norm_eps)
 
         if adaptive_layer_norm:
             self.norm1 = AdaptiveLayerNorm(d_model, norm1)
@@ -260,19 +198,15 @@ class TransformerEncoderLayer(nn.Module):
         else:
             self.norm1 = norm1
             self.norm2 = norm2
+            
 
-    def __setstate__(self, state):
-        super(TransformerEncoderLayer, self).__setstate__(state)
-        if not hasattr(self, "activation"):
-            self.activation = F.relu
-
-    def forward(
+    def __call__(
         self,
-        src: Tensor,
-        src_mask: Optional[Tensor] = None,
-        src_key_padding_mask: Optional[Tensor] = None,
+        src: mx.array,
+        src_mask: Optional[mx.array] = None,
+        src_key_padding_mask: Optional[mx.array] = None,
         cache=None,
-    ) -> Tensor:
+    ) -> mx.array:
         r"""Pass the input through the encoder layer.
 
         Args:
@@ -291,9 +225,7 @@ class TransformerEncoderLayer(nn.Module):
 
         if src_key_padding_mask is not None:
             _skpm_dtype = src_key_padding_mask.dtype
-            if _skpm_dtype != torch.bool and not torch.is_floating_point(
-                src_key_padding_mask
-            ):
+            if _skpm_dtype != mx.bool_ and not mx.issubdtype(src_key_padding_mask.dtype,mx.floating):
                 raise AssertionError(
                     "only bool and floating types of key_padding_mask are supported"
                 )
@@ -320,11 +252,11 @@ class TransformerEncoderLayer(nn.Module):
     # self-attention block
     def _sa_block(
         self,
-        x: Tensor,
-        attn_mask: Optional[Tensor],
-        key_padding_mask: Optional[Tensor],
+        x: mx.array,
+        attn_mask: Optional[mx.array],
+        key_padding_mask: Optional[mx.array],
         cache=None,
-    ) -> Tensor:
+    ) -> mx.array:
         # print(x.shape,attn_mask.shape,key_padding_mask)
         # torch.Size([1, 188, 512]) torch.Size([188, 188]) None
         # import os
@@ -341,7 +273,7 @@ class TransformerEncoderLayer(nn.Module):
         return self.dropout1(x)
 
     # feed forward block
-    def _ff_block(self, x: Tensor) -> Tensor:
+    def _ff_block(self, x: mx.array) -> mx.array:
         x = self.linear2(self.dropout(self.activation(self.linear1(x))))
         return self.dropout2(x)
 
@@ -356,23 +288,33 @@ class AdaptiveLayerNorm(nn.Module):
         self.d_model = d_model
         self.eps = self.norm.eps
 
-    def forward(self, input: Tensor, embedding: Tensor = None) -> Tensor:
+    def __call__(self, input: mx.array, embedding: mx.array = None) -> mx.array:
         if isinstance(input, tuple):
             input, embedding = input
-            weight, bias = torch.split(
+            weight, bias = mx.split(
                 self.project_layer(embedding),
-                split_size_or_sections=self.d_model,
-                dim=-1,
+                indices_or_sections=self.d_model,
+                axis=-1,
             )
             return (weight * self.norm(input) + bias, embedding)
 
-        weight, bias = torch.split(
+        weight, bias = mx.split(
             self.project_layer(embedding),
-            split_size_or_sections=self.d_model,
-            dim=-1,
+            indices_or_sections=self.d_model,
+            axis=-1,
         )
         return weight * self.norm(input) + bias
 
 
 def _get_clones(module, N):
-    return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
+    return mx.array([copy.deepcopy(module) for i in range(N)])
+
+def _get_activation_fn(activation):
+    """Return an activation function given a string"""
+    if activation == "relu":
+        return nn.relu
+    if activation == "gelu":
+        return nn.gelu
+    if activation == "glu":
+        return nn.glu
+    raise RuntimeError(F"activation should be relu/gelu, not {activation}.")
