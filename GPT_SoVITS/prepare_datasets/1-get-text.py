@@ -37,8 +37,8 @@ def my_save(fea,path):#####fix issue: torch.save doesn't support chinese path
     dir=os.path.dirname(path)
     name=os.path.basename(path)
     # tmp_path="%s/%s%s.pth"%(dir,ttime(),i_part)
-    tmp_path="%s%s.pth"%(ttime(),i_part)
-    torch.save(fea,tmp_path)
+    tmp_path="%s%s.npy"%(ttime(),i_part)
+    np.save(tmp_path,fea)
     shutil.move(tmp_path,"%s/%s"%(dir,name))
 
 
@@ -62,7 +62,7 @@ if os.path.exists(txt_path) == False:
 
     def get_bert_feature(text, word2ph):
         with torch.no_grad():
-            inputs = tokenizer(text, return_tensors="np")
+            inputs = tokenizer(text, return_tensors="pt")
             for i in inputs:
                 inputs[i] = inputs[i].to(device)
             res = bert_model(**inputs, output_hidden_states=True)
@@ -90,7 +90,7 @@ if os.path.exists(txt_path) == False:
                     bert_feature = get_bert_feature(norm_text, word2ph)
                     assert bert_feature.shape[-1] == len(phones)
                     # torch.save(bert_feature, path_bert)
-                    my_save(bert_feature, path_bert)
+                    my_save(bert_feature.numpy(), path_bert)
                 phones = " ".join(phones)
                 # res.append([name,phones])
                 res.append([name, phones, word2ph, norm_text])

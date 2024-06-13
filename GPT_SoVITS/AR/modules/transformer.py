@@ -17,7 +17,7 @@ from torch.nn import functional as F
 import mlx.core as mx
 import mlx.nn as nn
 
-_shape_t = Union[int, List[int], torch.Size]
+_shape_t = Union[int, List[int], mx.array]
 
 
 class LayerNorm(nn.Module):
@@ -307,7 +307,7 @@ class AdaptiveLayerNorm(nn.Module):
 
 
 def _get_clones(module, N):
-    return mx.array([copy.deepcopy(module) for i in range(N)])
+    return [module for i in range(N)]
 
 def _get_activation_fn(activation):
     """Return an activation function given a string"""

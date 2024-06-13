@@ -17,6 +17,9 @@ logging.getLogger("charset_normalizer").setLevel(logging.ERROR)
 logging.getLogger("torchaudio._extension").setLevel(logging.ERROR)
 import pdb
 import torch
+import mlx.core as mx
+from mlx.utils import tree_flatten, tree_unflatten
+mx.set_default_device(mx.gpu)
 
 if os.path.exists("./gweight.txt"):
     with open("./gweight.txt", 'r', encoding="utf-8") as file:
@@ -25,7 +28,7 @@ if os.path.exists("./gweight.txt"):
             "gpt_path", gweight_data)
 else:
     gpt_path = os.environ.get(
-        "gpt_path", "GPT_SoVITS/pretrained_models/s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt")
+        "gpt_path", "GPT_SoVITS/pretrained_models/s1bert25hz-2kh-longer-epoch=68e-step=50232.npz")
 
 if os.path.exists("./sweight.txt"):
     with open("./sweight.txt", 'r', encoding="utf-8") as file:
@@ -83,6 +86,16 @@ if is_half == True:
     bert_model = bert_model.half().to(device)
 else:
     bert_model = bert_model.to(device)
+
+
+def init(*args,**kwargs):
+    _ = []
+    for i in args:
+        if isinstance(i,torch.Tensor):
+            _.append(mx.array(i.numpy()).astype(mx.float16))
+        else:
+            _.append(i)
+    return _, kwargs
 
 
 def get_bert_feature(text, word2ph):
@@ -166,16 +179,18 @@ change_sovits_weights(sovits_path)
 def change_gpt_weights(gpt_path):
     global hz, max_sec, t2s_model, config
     hz = 50
-    dict_s1 = torch.load(gpt_path, map_location="cpu")
-    config = dict_s1["config"]
+    dict_s1 = np.load(gpt_path, allow_pickle=True)
+    config = dict_s1["config"].tolist()
     max_sec = config["data"]["max_sec"]
     t2s_model = Text2SemanticLightningModule(config, "****", is_train=False)
-    t2s_model.load_state_dict(dict_s1["weight"])
-    if is_half == True:
-        t2s_model = t2s_model.half()
-    t2s_model = t2s_model.to(device)
-    t2s_model.eval()
-    total = sum([param.nelement() for param in t2s_model.parameters()])
+    t2s_model.model.update({"weight":dict_s1["weight"]})
+    # if is_half == True:
+    #     t2s_model = t2s_model.half()
+    # t2s_model = t2s_model.to(device)
+    # t2s_model.eval()
+    t2s_model.model.eval()
+    # t2s_model.model.apply(lambda x: x.astype(mx.float16))
+    total = sum([param.size for _,param in tree_flatten(t2s_model.model.parameters())])
     print("Number of parameter: %.2fM" % (total / 1e6))
     with open("./gweight.txt", "w", encoding="utf-8") as f: f.write(gpt_path)
 
@@ -395,17 +410,19 @@ def get_tts_wav(ref_wav_path, prompt_text, prompt_language, text, text_language,
         t2 = ttime()
         with torch.no_grad():
             # pred_semantic = t2s_model.model.infer(
-            pred_semantic, idx = t2s_model.model.infer_panel(
+            a,b=init(
                 all_phoneme_ids,
                 all_phoneme_len,
                 None if ref_free else prompt,
                 bert,
-                # prompt_phone_len=ph_offset,
                 top_k=top_k,
                 top_p=top_p,
-                temperature=temperature,
                 early_stop_num=hz * max_sec,
-            )
+                temperature=temperature)
+            
+            pred_semantic, idx = t2s_model.model.infer_panel(*a,**b)
+            mx.metal.clear_cache
+            pred_semantic = torch.from_numpy(np.array(pred_semantic)).to(device).to(torch.int32)
         t3 = ttime()
         # print(pred_semantic.shape,idx)
         pred_semantic = pred_semantic[:, -idx:].unsqueeze(
@@ -568,7 +585,7 @@ def get_weights_names():
         if name.endswith(".pth"): SoVITS_names.append("%s/%s" % (SoVITS_weight_root, name))
     GPT_names = [pretrained_gpt_name]
     for name in os.listdir(GPT_weight_root):
-        if name.endswith(".ckpt"): GPT_names.append("%s/%s" % (GPT_weight_root, name))
+        if name.endswith(".npz"): GPT_names.append("%s/%s" % (GPT_weight_root, name))
     return SoVITS_names, GPT_names
 
 

@@ -36,8 +36,8 @@ def my_save(fea,path):#####fix issue: torch.save doesn't support chinese path
     dir=os.path.dirname(path)
     name=os.path.basename(path)
     # tmp_path="%s/%s%s.pth"%(dir,ttime(),i_part)
-    tmp_path="%s%s.pth"%(ttime(),i_part)
-    torch.save(fea,tmp_path)
+    tmp_path="%s%s.npy"%(ttime(),i_part)
+    np.save(tmp_path,fea)
     shutil.move(tmp_path,"%s/%s"%(dir,name))
 
 hubert_dir="%s/4-cnhubert"%(opt_dir)
@@ -90,7 +90,7 @@ def name2go(wav_name,wav_path):
         32000,
         tmp_audio32.astype("int16"),
     )
-    my_save(ssl,hubert_path)
+    my_save(ssl.detach().numpy(),hubert_path)
 
 with open(inp_text,"r",encoding="utf8")as f:
     lines=f.read().strip("\n").split("\n")

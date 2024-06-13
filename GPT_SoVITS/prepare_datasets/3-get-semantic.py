@@ -12,7 +12,7 @@ is_half = eval(os.environ.get("is_half", "True"))
 import math, traceback
 import multiprocessing
 import sys, pdb
-
+import numpy as np
 now_dir = os.getcwd()
 sys.path.append(now_dir)
 from random import shuffle
@@ -65,10 +65,10 @@ if os.path.exists(semantic_path) == False:
     )
 
     def name2go(wav_name, lines):
-        hubert_path = "%s/%s.pt" % (hubert_dir, wav_name)
+        hubert_path = "%s/%s.npy" % (hubert_dir, wav_name)
         if os.path.exists(hubert_path) == False:
             return
-        ssl_content = torch.load(hubert_path, map_location="cpu")
+        ssl_content = torch.from_numpy(np.load(hubert_path))
         if is_half == True:
             ssl_content = ssl_content.half().to(device)
         else:

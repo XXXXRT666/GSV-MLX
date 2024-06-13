@@ -22,18 +22,18 @@ from AR.modules.transformer import TransformerEncoder
 from AR.modules.transformer import TransformerEncoderLayer
 from torch.nn import functional as F
 from torchmetrics.classification import MulticlassAccuracy
-
-default_config = {
+from mlx.utils import tree_flatten
+default_config = {"model":{
     "embedding_dim": 512,
     "hidden_dim": 512,
-    "num_head": 8,
-    "num_layers": 12,
+    "head": 8,
+    "n_layer": 12,
     "num_codebook": 8,
-    "p_dropout": 0.0,
+    "dropout": 0.0,
     "vocab_size": 1024 + 1,
     "phoneme_vocab_size": 512,
     "EOS": 1024,
-}
+}}
 
 
 class Text2SemanticDecoder(nn.Module):
@@ -80,7 +80,6 @@ class Text2SemanticDecoder(nn.Module):
         )
 
         self.ar_predict_layer = nn.Linear(self.model_dim, self.vocab_size, bias=False)
-        self.loss_fct = nn.losses.cross_entropy
 
         self.ar_accuracy_metric = MulticlassAccuracy(
             self.vocab_size,
@@ -103,8 +102,8 @@ class Text2SemanticDecoder(nn.Module):
         # Training
         # AR Decoder
         y, targets = self.pad_y_eos(codes, y_mask_int, eos_id=self.EOS)
-        x_len = x_lens.max()
-        y_len = y_lens.max()
+        x_len = x_lens.max().item()
+        y_len = y_lens.max().item()
         y_emb = self.ar_audio_embedding(y)
         y_pos = self.ar_audio_position(y_emb)
 
@@ -135,7 +134,7 @@ class Text2SemanticDecoder(nn.Module):
             .reshape(bsz * self.num_head, 1, src_len)
         )
         xy_attn_mask = mx.logical_or(xy_attn_mask,_xy_padding_mask)
-        new_attn_mask = mx.zeros_like(xy_attn_mask, dtype=x.dtype)
+        new_attn_mask = mx.zeros_like(xy_attn_mask).astype(x.dtype)
         new_attn_mask = mx.where(xy_attn_mask, float("-inf"), new_attn_mask)
         xy_attn_mask = new_attn_mask
         # x 和完整的 y 一次性输入模型
@@ -157,7 +156,7 @@ class Text2SemanticDecoder(nn.Module):
             (xy_pos, None),
             mask=xy_attn_mask,
         )
-        x_len = x_lens.max()
+        x_len = x_lens.max().item()
         logits = self.ar_predict_layer(xy_dec[:, x_len:])
 
         ###### DPO #############
@@ -167,17 +166,12 @@ class Text2SemanticDecoder(nn.Module):
             (reject_xy_pos, None),
             mask=reject_xy_attn_mask,
         )
-        x_len = x_lens.max()
         reject_logits = self.ar_predict_layer(reject_xy_dec[:, x_len:])
 
         # loss
         # from feiteng: 每次 duration 越多, 梯度更新也应该更多, 所以用 sum
 
-        loss_1 = nn.losses.cross_entropy(logits.transpose(0, 2, 1), targets, reduction="sum")
-        acc = self.ar_accuracy_metric(torch.tensor(np.array(logits.transpose(0, 2, 1))), torch.tensor(np.array(targets))).item()
-
         A_logits, R_logits = get_batch_logps(logits, reject_logits, targets, reject_targets)
-        loss_2, _, _ = dpo_loss(A_logits, R_logits, 0, 0, 0.2, reference_free=True)
 
         return logits, targets, A_logits, R_logits
 
@@ -198,8 +192,8 @@ class Text2SemanticDecoder(nn.Module):
         # Training
         # AR Decoder
         y, targets = self.pad_y_eos(codes, y_mask_int, eos_id=self.EOS)
-        x_len = x_lens.max()
-        y_len = y_lens.max()
+        x_len = x_lens.max().item()
+        y_len = y_lens.max().item()
         y_emb = self.ar_audio_embedding(y)
         y_pos = self.ar_audio_position(y_emb)
 
@@ -227,7 +221,7 @@ class Text2SemanticDecoder(nn.Module):
             .reshape(bsz * self.num_head, 1, src_len)
         )
         xy_attn_mask = mx.logical_or(xy_attn_mask, _xy_padding_mask)
-        new_attn_mask = mx.zeros_like(xy_attn_mask, dtype=x.dtype)
+        new_attn_mask = mx.zeros_like(xy_attn_mask).astype(x.dtype)
         new_attn_mask = mx.where(xy_attn_mask, float("-inf"),new_attn_mask)
         xy_attn_mask = new_attn_mask
         # x 和完整的 y 一次性输入模型
@@ -239,8 +233,6 @@ class Text2SemanticDecoder(nn.Module):
         logits = self.ar_predict_layer(xy_dec[:, x_len:]).transpose(0, 2, 1)
         # loss
         # from feiteng: 每次 duration 越多, 梯度更新也应该更多, 所以用 sum
-        loss = nn.losses.cross_entropy(logits, targets, reduction="sum")
-        acc = self.ar_accuracy_metric(torch.tensor(np.array(logits)), torch.tensor(np.array(targets))).item()
         return logits, targets
 
     # 需要看下这个函数和 forward 的区别以及没有 semantic 的时候 prompts 输入什么
@@ -295,7 +287,7 @@ class Text2SemanticDecoder(nn.Module):
                 print("use early stop num:", early_stop_num)
                 stop = True
 
-            if mx.argmax(logits, dim=-1)[0] == self.EOS or samples[0, 0] == self.EOS:
+            if mx.argmax(logits, axis=-1)[0] == self.EOS or samples[0, 0] == self.EOS:
                 # print(torch.argmax(logits, dim=-1)[0] == self.EOS, samples[0, 0] == self.EOS)
                 stop = True
             if stop:
@@ -308,7 +300,7 @@ class Text2SemanticDecoder(nn.Module):
             # print(samples.shape)#[1,1]#第一个1是bs
             # import os
             # os._exit(2333)
-            y = mx.concatenate([y, samples], dim=1)
+            y = mx.concatenate([y, samples], axis=1)
         return y
 
     def pad_y_eos(self, y, y_mask_int, eos_id):
@@ -419,7 +411,7 @@ class Text2SemanticDecoder(nn.Module):
             cache["first_infer"] = 0
             if cache["y_emb"] is not None:
                 y_emb = mx.concatenate(
-                    [cache["y_emb"], self.ar_audio_embedding(y[:, -1:])], dim = 1
+                    [cache["y_emb"], self.ar_audio_embedding(y[:, -1:])], axis = 1
                 )
                 cache["y_emb"] = y_emb
                 y_pos = self.ar_audio_position(y_emb)

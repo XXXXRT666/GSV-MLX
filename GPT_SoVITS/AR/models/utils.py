@@ -9,41 +9,59 @@ import copy
 import numpy as np
 
 
-def scatter(self:mx.array, dim:int, index:mx.array, src:mx.array) -> mx.array:
-    """
-    Writes all values from the tensor src into self at the indices specified in the index tensor.
+# def scatter(self:mx.array, dim:int, index:mx.array, src:mx.array) -> mx.array:
+#     """
+#     Writes all values from the tensor src into self at the indices specified in the index tensor.
 
-    Args:
-    self (mx.array): The destination tensor.
-    index (np.ndarray): The tensor containing indices to write values to self.
-    src (np.ndarray): The source tensor.
-    dim (int): The dimension along which to scatter.
+#     Args:
+#     self (mx.array): The destination tensor.
+#     index (np.ndarray): The tensor containing indices to write values to self.
+#     src (np.ndarray): The source tensor.
+#     dim (int): The dimension along which to scatter.
 
-    Returns:
-    np.ndarray: The updated self tensor.
-    """
-    assert self.ndim == index.ndim == src.ndim, "self, index, and src must have the same number of dimensions"
-    assert index.shape[dim] <= src.shape[dim], "index.size(dim) must be less than or equal to src.size(dim)"
+#     Returns:
+#     np.ndarray: The updated self tensor.
+#     """
+#     # assert self.ndim == index.ndim == src.ndim, "self, index, and src must have the same number of dimensions"
+#     # assert index.shape[dim] <= src.shape[dim], "index.size(dim) must be less than or equal to src.size(dim)"
     
-    if dim == 0:
-        for i in range(index.shape[0]):
-            for j in range(index.shape[1]):
-                for k in range(index.shape[2]):
-                    self[index[i, j, k], j, k] = src[i, j, k]
-    elif dim == 1:
-        for i in range(index.shape[0]):
-            for j in range(index.shape[1]):
-                for k in range(index.shape[2]):
-                    self[i, index[i, j, k], k] = src[i, j, k]
-    elif dim == 2:
-        for i in range(index.shape[0]):
-            for j in range(index.shape[1]):
-                for k in range(index.shape[2]):
-                    self[i, j, index[i, j, k]] = src[i, j, k]
-    else:
-        raise ValueError("dim must be 0, 1, or 2")
+#     if self.ndim == 3:
+#         if dim == 0:
+#             for i in range(index.shape[0]):
+#                 for j in range(index.shape[1]):
+#                     for k in range(index.shape[2]):
+#                         self[index[i, j, k], j, k] = src[i, j, k]
+#         elif dim == 1:
+#             for i in range(index.shape[0]):
+#                 for j in range(index.shape[1]):
+#                     for k in range(index.shape[2]):
+#                         self[i, index[i, j, k], k] = src[i, j, k]
+#         elif dim == 2:
+#             for i in range(index.shape[0]):
+#                 for j in range(index.shape[1]):
+#                     for k in range(index.shape[2]):
+#                         self[i, j, index[i, j, k]] = src[i, j, k]
+#         else:
+#             raise ValueError("dim must be 0, 1, or 2")
+        
+#     if self.ndim == 2:
+#         if dim == 0:
+#             for i in range(index.shape[0]):
+#                 for j in range(index.shape[1]):
+#                     self[index[i, j], j] = src[i, j]
+#         elif dim == 1:
+#             for i in range(index.shape[0]):
+#                 for j in range(index.shape[1]):
+#                     self[i, index[i, j, k]] = src[i, j]
+        
+#         else:
+#             raise ValueError("dim must be 0, 1, or 2")
     
-    return self
+#     if self.ndim == 1:
+#         for i in range(index.shape[0]):
+#             self[index[i]] = src[i]
+    
+#     return self
 
 
 def sequence_mask(length, max_length=None):
@@ -74,9 +92,11 @@ def make_pad_mask(lengths: mx.array, max_len: int = 0) -> mx.array:
     """
     assert lengths.ndim == 1, lengths.ndim
     max_len = max(max_len, lengths.max())
-    n = lengths.size(0)
-    seq_range = mx.arange(0, max_len)
-    expaned_lengths = mx.tile(mx.expand_dims(seq_range, 0),(n, max_len))
+    if isinstance(max_len, mx.array):
+        max_len = max_len.item()
+    n = lengths.shape[0]
+    seq_range = mx.arange(0,max_len)
+    expaned_lengths = mx.tile(mx.expand_dims(seq_range, 0),(n, 1))
 
     return expaned_lengths >= mx.expand_dims(lengths, -1)
 
@@ -114,9 +134,14 @@ def top_k_top_p_filtering(
         sorted_indices_to_remove[..., 0] = 0
 
         # scatter sorted tensors to original indexing
-        indices_to_remove = scatter(sorted_indices_to_remove,
+        sorted_indices_to_remove, sorted_indices = (
+            torch.from_numpy(np.array(sorted_indices_to_remove)),
+            torch.from_numpy(np.array(sorted_indices)),
+            )
+        indices_to_remove = sorted_indices_to_remove.scatter(
             1, sorted_indices, sorted_indices_to_remove
         )
+        indices_to_remove = mx.array(indices_to_remove.numpy())
         logits[indices_to_remove] = filter_value
     return logits
 
@@ -147,7 +172,7 @@ def multinomial_sample_one_no_sync(
 ):  # Does multinomial sampling without a cuda synchronization
     q = np.random.exponential(scale=1.0, size=probs_sort.shape)
     q = mx.array(q)
-    return mx.argmax(probs_sort / q, axis=-1, keepdim=True).astype(mx.int32)
+    return mx.argmax(probs_sort / q, axis=-1, keepdims=True).astype(mx.int32)
 
 
 def logits_to_probs(
@@ -163,12 +188,18 @@ def logits_to_probs(
     # print(logits.shape,previous_tokens.shape)
     # pdb.set_trace()
     if previous_tokens is not None and repetition_penalty != 1.0:
-        previous_tokens = previous_tokens.long()
+        previous_tokens = previous_tokens.astype(mx.int64)
         score = mx.take(logits, axis=0, indices=previous_tokens)
         score = mx.where(
             score < 0, score * repetition_penalty, score / repetition_penalty
         )
-        logits = scatter(logits, dim=0, index=previous_tokens, src=score)
+        logits, previous_tokens, score = (
+            torch.from_numpy(np.array(logits)),
+            torch.from_numpy(np.array(previous_tokens)),
+            torch.from_numpy(np.array(score)),
+            )
+        logits = logits.scatter_(dim=0, index=previous_tokens, src=score)
+        logits = mx.array(logits.numpy())
 
     if top_p is not None and top_p < 1.0:
         sorted_logits, sorted_indices = mx.sort(logits, descending=True)[..., ::-1]
@@ -177,19 +208,23 @@ def logits_to_probs(
         )
         sorted_indices_to_remove = cum_probs > top_p
         sorted_indices_to_remove[0] = False  # keep at least one option
-        indices_to_remove = scatter(sorted_indices_to_remove,
+        sorted_indices_to_remove, sorted_indices = (
+            torch.from_numpy(np.array(sorted_indices_to_remove)),
+            torch.from_numpy(np.array(sorted_indices)),
+            )
+        indices_to_remove = sorted_indices_to_remove.scatter(
             dim=0, index=sorted_indices, src=sorted_indices_to_remove
         )
-        logits = mx.where(indices_to_remove, -float("Inf"), logits)
+        logits = mx.where(mx.array(indices_to_remove,dtype=mx.bool_), -float("Inf"), logits)
 
     logits = logits / max(temperature, 1e-5)
 
     if top_k is not None:
-        v, _ = mx.topk(logits, min(top_k, logits.shape[-1]))
+        v= mx.topk(logits, min(top_k, logits.shape[-1]))
         pivot = mx.expand_dims(v[..., -1], -1)
         logits = mx.where(logits < pivot, -float("Inf"), logits)
 
-    probs = mx.softmax(logits, dim=-1)
+    probs = mx.softmax(logits, axis=-1)
     return probs
 
 
@@ -235,24 +270,28 @@ def get_batch_logps(logits_target: torch.FloatTensor, logits_reject: torch.Float
 
 def make_reject_y(y_o, y_lens):
     def repeat_P(y):
-        range_idx, _ = torch.randint(0, len(y), size=(2,)).sort()
+        range_idx = mx.sort(mx.random.randint(0, len(y), shape=(2,)))
+        if range_idx[1]-range_idx[0] >=5:
+            return lost_P(y)
         pre = y[:range_idx[0]]
         shf = y[range_idx[1]:]
         range_text = y[range_idx[0]:range_idx[1]]
-        new_y = torch.cat([pre, range_text, range_text, shf])
+        new_y = mx.concatenate([pre, range_text, range_text, shf])
         return new_y
     def lost_P(y):
-        range_idx, _ = torch.randint(0, len(y), size=(2,)).sort()
+        range_idx =mx.sort(mx.random.randint(0, len(y), shape=(2,)))
+        if range_idx[1]-range_idx[0] >=5:
+            return lost_P(y)
         pre = y[:range_idx[0]]
         shf = y[range_idx[1]:]
         range_text = y[range_idx[0]:range_idx[1]]
-        new_y = torch.cat([pre, shf])
+        new_y = mx.concatenate([pre, shf])
         return new_y
     bs = len(y_lens)
     reject_y = []
     reject_y_lens = []
     for b in range(bs):
-        process_item_idx = torch.randint(0, 1, size=(1, ))[0]
+        process_item_idx = mx.random.randint(0, 2, shape=(1, ))[0]
         if process_item_idx == 0:
             new_y = repeat_P(y_o[b])
             reject_y.append(new_y)
@@ -264,9 +303,9 @@ def make_reject_y(y_o, y_lens):
     max_length = max(reject_y_lens)
     for b in range(bs):
         pad_length = max_length - reject_y_lens[b]
-        reject_y[b] = torch.cat([reject_y[b], torch.zeros(pad_length, dtype=y_o.dtype, device=y_o.device)], dim=0)
+        reject_y[b] = mx.concatenate([reject_y[b], mx.zeros(pad_length, dtype=y_o.dtype)], axis=0)
 
-    reject_y = torch.stack(reject_y, dim = 0)
-    reject_y_lens = torch.tensor(reject_y_lens, device=y_lens.device)
+    reject_y = mx.stack(reject_y, axis = 0)
+    reject_y_lens = mx.array(reject_y_lens)
 
     return reject_y, reject_y_lens

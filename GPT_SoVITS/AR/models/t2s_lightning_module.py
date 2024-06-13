@@ -28,11 +28,10 @@ class Text2SemanticLightningModule(LightningModule):
         pretrained_s1 = config.get("pretrained_s1")
         if pretrained_s1 and is_train:
             # print(self.load_state_dict(torch.load(pretrained_s1,map_location="cpu")["state_dict"]))
-            print(
-                self.load_state_dict(
-                    torch.load(pretrained_s1, map_location="cpu")["weight"]
+            self.model.update(
+                    {"weight":np.load(pretrained_s1, allow_pickle=True)["weight"].tolist()}
                 )
-            )
+            
         if is_train:
             self.automatic_optimization = False
             self.save_hyperparameters()
@@ -40,7 +39,7 @@ class Text2SemanticLightningModule(LightningModule):
             self.eval_dir.mkdir(parents=True, exist_ok=True)
 
     def training_step(self, batch: Dict, batch_idx: int):
-        opt = self.optimizers()
+        opt = self.optimizers
         self.scheduler = self.lr_schedulers()
         loss_fn = self.loss_fn_dpo if self.config["train"].get("if_dpo",False)==True else self.loss_fn_old
         input_batch = (
@@ -101,13 +100,13 @@ class Text2SemanticLightningModule(LightningModule):
         parameters_names.append(
             [name_param_pair[0] for name_param_pair in tree_flatten(self.model.trainable_parameters(),prefix=".self.model")]
         )
-        lm_opt = mlx.optimizers.Adamax(
+        self.optimizers = mlx.optimizers.Adamax(
             learning_rate=0.01,
             betas=(0.9, 0.95),
         )
 
         return {
-            "optimizer": lm_opt,
+            "optimizer": self.optimizers,
             "lr_scheduler": {
                 "scheduler": WarmupCosineLRSchedule(
                     init_lr=self.config["optimizer"]["lr_init"],
@@ -115,40 +114,41 @@ class Text2SemanticLightningModule(LightningModule):
                     end_lr=self.config["optimizer"]["lr_end"],
                     warmup_steps=self.config["optimizer"]["warmup_steps"],
                     total_steps=self.config["optimizer"]["decay_steps"],
+                    optimizer=self.optimizers
                 )
             },
         }
 
 
-    def loss_fn_dpo(self, input_batch):
-        logits, targets ,A_logits, R_logits=self.model(*input_batch)
-        loss_1 = nn.losses.cross_entropy(
-            logits.transpose(0, 2, 1), targets, reduction="sum"
-            )
+    def loss_fn_dpo(self, model, input_batch):
+        logits, targets ,A_logits, R_logits=model(*input_batch)
+        loss_1 = mx.array(torch.nn.functional.cross_entropy(
+            torch.from_numpy(np.array(logits.transpose(0,2,1))), torch.from_numpy(np.array(targets)), reduction="sum"
+            ))
         loss_2, _, _ = dpo_loss(
             A_logits, R_logits, 0, 0, 0.2, reference_free=True
             )
-        acc = self.acc_dpo(self, logits, targets)
+        acc = self.acc_dpo(logits, targets)
         self.log_(loss_1 + loss_2, acc)
         return loss_1 + loss_2
 
-    def loss_fn_old(self,input_batch):
-        logits, targets = self.model.forward_old(*input_batch)
-        loss = nn.losses.cross_entropy(
-            logits, targets, reduction="sum"
-            )
-        acc = self.acc_old(self, logits, targets)
+    def loss_fn_old(self, model, input_batch):
+        logits, targets = model.forward_old(*input_batch)
+        loss = mx.array(torch.nn.functional.cross_entropy(
+            torch.from_numpy(np.array(logits)), torch.from_numpy(np.array(targets)), reduction="sum"
+            ))
+        acc = self.acc_old(logits, targets)
         self.log_(loss, acc)   
         return loss
 
-    def acc_dpo(self:Text2SemanticDecoder, logits, targets):
-        acc = self.ar_accuracy_metric(
+    def acc_dpo(self, logits, targets):
+        acc = self.model.ar_accuracy_metric(
             torch.tensor(np.array(logits.transpose(0, 2, 1))), torch.tensor(np.array(targets))
             ).item()
         return acc
 
-    def acc_old(self:Text2SemanticDecoder, logits, targets):
-        acc = self.ar_accuracy_metric(
+    def acc_old(self, logits, targets):
+        acc = self.model.ar_accuracy_metric(
             torch.tensor(np.array(logits)), torch.tensor(np.array(targets))
             ).item()
         return acc
@@ -157,7 +157,7 @@ class Text2SemanticLightningModule(LightningModule):
 
         self.log(
                 "total_loss",
-                loss,
+                loss.item(),
                 on_step=True,
                 on_epoch=True,
                 prog_bar=True,
@@ -165,7 +165,7 @@ class Text2SemanticLightningModule(LightningModule):
         )
         self.log(
                 "lr",
-                self.scheduler.last_lr()[0],
+                self.scheduler.last_lr[0],
                 on_epoch=True,
                 prog_bar=True,
                 sync_dist=True,

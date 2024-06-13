@@ -25,7 +25,7 @@ class TokenEmbedding(nn.Module):
         return self.word_embeddings.weight[index : index + 1]
 
     def __call__(self, x: mx.array):
-        x = self.word_embeddings(x)
+        x = self.word_embeddings(x.astype(mx.int64))
         x = self.dropout(x)
         return x
 
@@ -56,23 +56,24 @@ class SinePositionalEmbedding(nn.Module):
                 if self.pe.dtype != x.dtype:
                     self.pe = self.pe.astype(dtype=x.dtype)
                 return
-        pe = mx.zeros(x.shape[1], self.embedding_dim)
+        pe = mx.zeros((x.shape[1], self.embedding_dim))
         if self.reverse:
             position = mx.expand_dims(mx.arange(
-                x.shape[1] - 1, -1, -1.0, dtype=mx.Dtype.float32
+                x.shape[1] - 1, -1, -1.0, dtype=mx.float32
             ),1)
         else:
-            position = mx.expand_dims(mx.arange(0, x.shape[1], dtype=mx.Dtype.float32))
+            position = mx.expand_dims(mx.arange(0, x.shape[1], dtype=mx.float32),1)
         div_term = mx.exp(
-            mx.arange(0, self.embedding_dim, 2, dtype=mx.Dtype.float32)
+            mx.arange(0, self.embedding_dim, 2, dtype=mx.float32)
             * -(math.log(10000.0) / self.embedding_dim)
         )
         pe[:, 0::2] = mx.sin(position * div_term)
         pe[:, 1::2] = mx.cos(position * div_term)
-        pe = mx.expand_dim(pe,0)
+        pe = mx.expand_dims(pe,0)
         self.pe = pe
 
     def __call__(self, x: mx.array) -> mx.array:
+        x=x.astype(mx.int64)
         self.extend_pe(x)
         output = mx.expand_dims(x,-1) if x.ndim == 2 else x
         output = output * self.x_scale + self.alpha * self.pe[:, : x.shape[1]]

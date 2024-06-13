@@ -20,6 +20,7 @@ class WarmupCosineLRSchedule(torch.optim.lr_scheduler._LRScheduler):
         end_lr,
         warmup_steps=10000,
         total_steps=400000,
+        optimizer=None,
         current_step=0,
     ):
         self.init_lr = init_lr
@@ -28,6 +29,7 @@ class WarmupCosineLRSchedule(torch.optim.lr_scheduler._LRScheduler):
         self._warmup_rate = (peak_lr - init_lr) / warmup_steps
         self._decay_rate = (end_lr - peak_lr) / (total_steps - warmup_steps)
         self._current_step = current_step
+        self.optimizer = optimizer
         self.lr = init_lr
         self.warmup_steps = warmup_steps
         self.total_steps = total_steps

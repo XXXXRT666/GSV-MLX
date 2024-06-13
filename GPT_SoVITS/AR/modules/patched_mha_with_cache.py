@@ -5,32 +5,50 @@ import mlx.core as mx
 import warnings
 
 
-def scaled_dot_product_attention(query:mx.array, key:mx.array, value:mx.array,
-                                attn_mask:mx.array=None, dropout_p=0.0, is_causal=False, scale=None) -> mx.array:
-    L, S = query.shape[-2], key.shape[-2]
-    scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
-    attn_bias = mx.zeros((L, S), dtype=query.dtype)
-    if is_causal:
-        assert attn_mask is None
-        temp_mask = mx.tril(mx.ones((L, S), dtype=mx.bool_),0)
-        attn_bias = mx.where(~temp_mask, float('-inf'), attn_bias)
-        attn_bias.astype(query.dtype)
+# def scaled_dot_product_attention(query:mx.array, key:mx.array, value:mx.array,
+#                                 attn_mask:mx.array=None, dropout_p=0.0, is_causal=False, scale=None) -> mx.array:
+#     L, S = query.shape[-2], key.shape[-2]
+#     scale_factor = 1 / math.sqrt(query.shape[-1]) if scale is None else scale
+#     attn_bias = mx.zeros((L, S), dtype=query.dtype)
+#     if is_causal:
+#         assert attn_mask is None
+#         temp_mask = mx.tril(mx.ones((L, S), dtype=mx.bool_),0)
+#         attn_bias = mx.where(~temp_mask, float('-inf'), attn_bias)
+#         attn_bias.astype(query.dtype)
 
+#     if attn_mask is not None:
+#         if attn_mask.dtype == mx.bool_:
+#             attn_bias = mx.where(~attn_mask, float('-inf'), attn_bias)
+#         else:
+#             attn_bias += attn_mask
+#     attn_weight = query @ key.swapaxes(-2, -1) * scale_factor
+#     attn_weight += attn_bias
+#     attn_weight = mx.softmax(attn_weight, axis=-1)
+#     attn_weight = Dropout(attn_weight, dropout_p, training=False)
+#     return attn_weight @ value
+
+
+
+
+def scaled_dot_product_attention(q:mx.array, k:mx.array, v:mx.array,
+    attn_mask:mx.array=None, dropout_p=0.0,scale=None):
+    if dropout_p == 0.0:
+        return mx.fast.scaled_dot_product_attention(q,k,v,mask=attn_mask,scale=scale)
+    
+    scale_factor = 1 / math.sqrt(q.shape[-1]) if scale is None else scale
+    attn = mx.matmul(q, k.swapaxes(-1, -2)) * scale_factor
     if attn_mask is not None:
-        if attn_mask.dtype == mx.bool_:
-            attn_bias = mx.where(~temp_mask, float('-inf'), attn_bias)
-        else:
-            attn_bias += attn_mask
-    attn_weight = query @ key.swapaxes(-2, -1) * scale_factor
-    attn_weight += attn_bias
-    attn_weight = mx.softmax(attn_weight, dim=-1)
-    attn_weight = Dropout(attn_weight, dropout_p, train=True)
-    return attn_weight @ value
+        attn = mx.where(attn_mask, -float("inf"),attn)
+    attn = mx.softmax(attn, axis=2)
+    p_attn = Dropout(attn, dropout_p, training=False)
+    output = mx.matmul(p_attn, v)
+    return output
+
 
 
 def Dropout(x:mx.array,p,training=True)->mx.array:
     p=1-p
-    if p < 0 or p >= 1:
+    if p < 0 or p > 1:
         raise ValueError(f"The dropout probability {p} is not in [0, 1)")
     if p == 1 or not training:
         return x
@@ -39,7 +57,7 @@ def Dropout(x:mx.array,p,training=True)->mx.array:
 
 
 def linear(input,weight,bias=None)->mx.array:
-    if bias:
+    if bias is not None:
         return mx.addmm(bias, input, weight.T)
     else:
         return input @ weight.T
@@ -52,43 +70,43 @@ def _mha_shape_check(query: mx.array, key: mx.array, value: mx.array,
     # Raises an error if `query` is not 2-D (unbatched) or 3-D (batched) tensor.
 
     # Shape check.
-    if query.ndim() == 3:
+    if query.ndim == 3:
         # Batched Inputs
         is_batched = True
-        assert key.ndim() == 3 and value.ndim() == 3, \
+        assert key.ndim == 3 and value.ndim == 3, \
             ("For batched (3-D) `query`, expected `key` and `value` to be 3-D"
-             f" but found {key.ndim()}-D and {value.ndim()}-D tensors respectively")
+             f" but found {key.ndim}-D and {value.ndim}-D tensors respectively")
         if key_padding_mask is not None:
-            assert key_padding_mask.ndim() == 2, \
+            assert key_padding_mask.ndim == 2, \
                 ("For batched (3-D) `query`, expected `key_padding_mask` to be `None` or 2-D"
-                 f" but found {key_padding_mask.ndim()}-D tensor instead")
+                 f" but found {key_padding_mask.ndim}-D tensor instead")
         if attn_mask is not None:
-            assert attn_mask.ndim() in (2, 3), \
+            assert attn_mask.ndim in (2, 3), \
                 ("For batched (3-D) `query`, expected `attn_mask` to be `None`, 2-D or 3-D"
-                 f" but found {attn_mask.ndim()}-D tensor instead")
-    elif query.ndim() == 2:
+                 f" but found {attn_mask.ndim}-D tensor instead")
+    elif query.ndim == 2:
         # Unbatched Inputs
         is_batched = False
-        assert key.ndim() == 2 and value.ndim() == 2, \
+        assert key.ndim == 2 and value.ndim == 2, \
             ("For unbatched (2-D) `query`, expected `key` and `value` to be 2-D"
-             f" but found {key.ndim()}-D and {value.ndim()}-D tensors respectively")
+             f" but found {key.ndim}-D and {value.ndim}-D tensors respectively")
 
         if key_padding_mask is not None:
-            assert key_padding_mask.ndim() == 1, \
+            assert key_padding_mask.ndim == 1, \
                 ("For unbatched (2-D) `query`, expected `key_padding_mask` to be `None` or 1-D"
-                 f" but found {key_padding_mask.ndim()}-D tensor instead")
+                 f" but found {key_padding_mask.ndim}-D tensor instead")
 
         if attn_mask is not None:
-            assert attn_mask.ndim() in (2, 3), \
+            assert attn_mask.ndim in (2, 3), \
                 ("For unbatched (2-D) `query`, expected `attn_mask` to be `None`, 2-D or 3-D"
-                 f" but found {attn_mask.ndim()}-D tensor instead")
-            if attn_mask.ndim() == 3:
+                 f" but found {attn_mask.ndim}-D tensor instead")
+            if attn_mask.ndim == 3:
                 expected_shape = (num_heads, query.shape[0], key.shape[0])
                 assert attn_mask.shape == expected_shape, \
                     (f"Expected `attn_mask` shape to be {expected_shape} but got {attn_mask.shape}")
     else:
         raise AssertionError(
-            f"query should be unbatched 2D or batched 3D tensor but received {query.ndim()}-D query tensor")
+            f"query should be unbatched 2D or batched 3D tensor but received {query.ndim}-D query tensor")
 
     return is_batched
 
@@ -490,14 +508,14 @@ def multi_head_attention_forward_patched(
 
     if attn_mask is not None:
         # ensure attn_mask's dim is 3
-        if attn_mask.ndim() == 2:
+        if attn_mask.ndim == 2:
             correct_2d_size = (tgt_len, src_len)
             if attn_mask.shape != correct_2d_size:
                 raise RuntimeError(
                     f"The shape of the 2D attn_mask is {attn_mask.shape}, but should be {correct_2d_size}."
                 )
             attn_mask = mx.expand_dims(attn_mask, 0)
-        elif attn_mask.ndim() == 3:
+        elif attn_mask.ndim == 3:
             correct_3d_size = (bsz * num_heads, tgt_len, src_len)
             if attn_mask.shape != correct_3d_size:
                 raise RuntimeError(
@@ -553,10 +571,10 @@ def multi_head_attention_forward_patched(
     if add_zero_attn:
         zero_attn_shape = (bsz * num_heads, 1, head_dim)
         k = mx.concatenate(
-            [k, mx.zeros(zero_attn_shape, dtype=k.dtype)], dim=1
+            [k, mx.zeros(zero_attn_shape, dtype=k.dtype)], axis=1
         )
         v = mx.concatenate(
-            [v, mx.zeros(zero_attn_shape, dtype=v.dtype)], dim=1
+            [v, mx.zeros(zero_attn_shape, dtype=v.dtype)], axis=1
         )
         if attn_mask is not None:
             attn_mask = mx.pad(attn_mask, [(0, 0)] * (attn_mask.ndim - 1) + [(0, 1)])
@@ -602,7 +620,7 @@ def multi_head_attention_forward_patched(
     
         else:
             attn_output_weights = mx.matmul(q_scaled, k.swapaxes(-2, -1))
-        attn_output_weights = mx.softmax(attn_output_weights, dim=-1)
+        attn_output_weights = mx.softmax(attn_output_weights, axis=-1)
         if dropout_p > 0.0:
             attn_output_weights = Dropout(attn_output_weights, p=dropout_p)
 
@@ -610,12 +628,12 @@ def multi_head_attention_forward_patched(
 
         attn_output = attn_output.swapaxes(0, 1).reshape(tgt_len * bsz, embed_dim)
         attn_output = linear(attn_output, out_proj_weight, out_proj_bias)
-        attn_output = attn_output.reshape(tgt_len, bsz, attn_output.size(1))
+        attn_output = attn_output.reshape(tgt_len, bsz, attn_output.shape[1])
 
         # optionally average attention weights over heads
         attn_output_weights = attn_output_weights.reshape(bsz, num_heads, tgt_len, src_len)
         if average_attn_weights:
-            attn_output_weights = attn_output_weights.mean(dim=1)
+            attn_output_weights = attn_output_weights.mean(axis=1)
 
         if not is_batched:
             # squeeze the output if input was unbatched
@@ -627,7 +645,7 @@ def multi_head_attention_forward_patched(
         # if attn_mask's shape is (1, L, S) we need to unsqueeze to (1, 1, L, S)
         # in order to match the input for SDPA of (N, num_heads, L, S)
         if attn_mask is not None:
-            if attn_mask.shape[0] == 1 and attn_mask.ndim() == 3:
+            if attn_mask.shape[0] == 1 and attn_mask.ndim == 3:
                 attn_mask = mx.expand_dims(attn_mask,0)
             else:
                 attn_mask = attn_mask.reshape(bsz, num_heads, -1, src_len)
@@ -646,7 +664,7 @@ def multi_head_attention_forward_patched(
         )
 
         attn_output = linear(attn_output, out_proj_weight, out_proj_bias)
-        attn_output = attn_output.reshape(tgt_len, bsz, attn_output.size(1))
+        attn_output = attn_output.reshape(tgt_len, bsz, attn_output.shape[1])
         if not is_batched:
             # squeeze the output if input was unbatched
             attn_output = attn_output.squeeze(1)

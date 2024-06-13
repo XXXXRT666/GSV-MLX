@@ -247,7 +247,7 @@ class MultiheadAttention(nn.Module):
             .. note::
                 `batch_first` argument is ignored for unbatched inputs.
         """
-        is_batched = query.ndim() == 3
+        is_batched = query.ndim == 3
         if key_padding_mask is not None:
             _kpm_dtype = key_padding_mask.dtype
             if _kpm_dtype != mx.bool_ and not mx.issubdtype(key_padding_mask, mx.floating):
@@ -257,7 +257,7 @@ class MultiheadAttention(nn.Module):
         why_not_fast_path = ""
         if not is_batched:
             why_not_fast_path = (
-                f"input not batched; expected query.ndim() of 3 but got {query.ndim()}"
+                f"input not batched; expected query.ndim of 3 but got {query.ndim}"
             )
         elif query is not key or key is not value:
             # When lifting this restriction, don't forget to either
@@ -292,8 +292,8 @@ class MultiheadAttention(nn.Module):
 
             
 
-        if why_not_fast_path:
-            raise RuntimeError(why_not_fast_path)
+        # if why_not_fast_path:
+        #     raise RuntimeError(why_not_fast_path)
         if self.batch_first and is_batched:
             # make sure that the transpose op does not affect the "is" property
             if key is value:

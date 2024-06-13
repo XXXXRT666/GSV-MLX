@@ -7,7 +7,7 @@ import sys
 import traceback, os
 from typing import Dict
 from typing import List
-
+import mlx.core as mx
 import numpy as np
 import pandas as pd
 import torch, json
@@ -20,24 +20,20 @@ from text import cleaned_text_to_sequence
 # from config import exp_dir
 
 
-def batch_sequences(sequences: List[np.array], axis: int = 0, pad_value: int = 0):
+def batch_sequences(sequences: List[mx.array], axis: int = 0, pad_value: int = 0):
     seq = sequences[0]
     ndim = seq.ndim
     if axis < 0:
         axis += ndim
-    dtype = seq.dtype
-    pad_value = dtype.type(pad_value)
     seq_lengths = [seq.shape[axis] for seq in sequences]
-    max_length = np.max(seq_lengths)
+    max_length = max(seq_lengths)
 
     padded_sequences = []
     for seq, length in zip(sequences, seq_lengths):
-        padding = (
-            [(0, 0)] * axis + [(0, max_length - length)] + [(0, 0)] * (ndim - axis - 1)
-        )
-        padded_seq = np.pad(seq, padding, mode="constant", constant_values=pad_value)
-        padded_sequences.append(padded_seq)
-    batch = np.stack(padded_sequences)
+        padding = [(0, 0)] * axis + [(0, max_length - length)] + [(0, 0)] * (ndim - axis - 1)
+        padded_seq = np.pad(np.array(seq), padding, mode="constant",constant_values=pad_value)
+        padded_sequences.append(mx.array(padded_seq))
+    batch = mx.stack(padded_sequences)
     return batch
 
 
@@ -223,9 +219,9 @@ class Text2SemanticDataset(Dataset):
         semantic_ids_len = len(semantic_ids)
 
         flag = 0
-        path_bert = "%s/%s.pt" % (self.path3, item_name)
+        path_bert = "%s/%s.npy" % (self.path3, item_name)
         if os.path.exists(path_bert) == True:
-            bert_feature = torch.load(path_bert, map_location="cpu")
+            bert_feature = mx.array(np.load(path_bert))
         else:
             flag = 1
         if flag == 1:
@@ -249,9 +245,9 @@ class Text2SemanticDataset(Dataset):
 
     def collate(self, examples: List[Dict]) -> Dict:
         sample_index: List[int] = []
-        phoneme_ids: List[torch.Tensor] = []
+        phoneme_ids: List[mx.array] = []
         phoneme_ids_lens: List[int] = []
-        semantic_ids: List[torch.Tensor] = []
+        semantic_ids: List[mx.array] = []
         semantic_ids_lens: List[int] = []
         # return
 
@@ -266,31 +262,31 @@ class Text2SemanticDataset(Dataset):
         phoneme_ids = batch_sequences(phoneme_ids)
         semantic_ids = batch_sequences(semantic_ids, pad_value=self.PAD)
 
-        # # convert each batch to torch.tensor
-        phoneme_ids = torch.tensor(phoneme_ids)
-        semantic_ids = torch.tensor(semantic_ids)
-        phoneme_ids_lens = torch.tensor(phoneme_ids_lens)
-        semantic_ids_lens = torch.tensor(semantic_ids_lens)
-        bert_padded = torch.FloatTensor(len(examples), 1024, max(phoneme_ids_lens))
-        bert_padded.zero_()
+        # # convert each batch to mx.array
+        phoneme_ids = mx.array(phoneme_ids)
+        semantic_ids = mx.array(semantic_ids)
+        phoneme_ids_lens = mx.array(phoneme_ids_lens)
+        semantic_ids_lens = mx.array(semantic_ids_lens)
+        bert_padded = mx.zeros([len(examples), 1024, mx.max(phoneme_ids_lens).item()])
+
 
         for idx, item in enumerate(examples):
             bert = item["bert_feature"]
-            if bert != None:
+            if not(bert is None):
                 bert_padded[idx, :, : bert.shape[-1]] = bert
 
         return {
             # List[int]
             "ids": sample_index,
-            # torch.Tensor (B, max_phoneme_length)
+            # mx.array (B, max_phoneme_length)
             "phoneme_ids": phoneme_ids,
-            # torch.Tensor (B)
+            # mx.array (B)
             "phoneme_ids_len": phoneme_ids_lens,
-            # torch.Tensor (B, max_semantic_ids_length)
+            # mx.array (B, max_semantic_ids_length)
             "semantic_ids": semantic_ids,
-            # torch.Tensor (B)
+            # mx.array (B)
             "semantic_ids_len": semantic_ids_lens,
-            # torch.Tensor (B, 1024, max_phoneme_length)
+            # mx.array (B, 1024, max_phoneme_length)
             "bert_feature": bert_padded,
         }
 

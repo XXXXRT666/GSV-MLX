@@ -7,7 +7,7 @@ def str2bool(str):
 
 def get_newest_ckpt(string_list):
     # 定义一个正则表达式模式，用于匹配字符串中的数字
-    pattern = r'epoch=(\d+)-step=(\d+)\.ckpt'
+    pattern = r'epoch=(\d+)-step=(\d+)\.npz'
 
     # 使用正则表达式提取每个字符串中的数字信息，并创建一个包含元组的列表
     extracted_info = []

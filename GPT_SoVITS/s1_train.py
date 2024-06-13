@@ -8,6 +8,7 @@ import argparse
 import logging
 from pathlib import Path
 
+import mlx.core as mx
 import torch, platform
 from pytorch_lightning import seed_everything
 from pytorch_lightning import Trainer
@@ -26,11 +27,37 @@ from AR.utils import get_newest_ckpt
 from collections import OrderedDict
 from time import time as ttime
 import shutil
+from typing import Iterable, Mapping, Generator, Optional, Union, Any
+import pytorch_lightning.utilities.data
+from lightning_utilities.core.apply_func import is_dataclass_instance
+BType = Union[mx.array, str, Mapping[Any, "BType"], Iterable["BType"]]
+mx.set_default_device(mx.gpu)
+
+def _extract_batch_size(batch: BType) -> Generator[Optional[int], None, None]:
+    if isinstance(batch, mx.array):
+        if batch.ndim == 0:
+            yield 1
+        else:
+            yield batch.shape[0]
+    elif isinstance(batch, (Iterable, Mapping)) and not isinstance(batch, str):
+        if isinstance(batch, Mapping):
+            batch = batch.values()
+
+        for sample in batch:
+            yield from _extract_batch_size(sample)
+    elif is_dataclass_instance(batch):
+        for field in fields(batch):  # type: ignore[arg-type]
+            yield from _extract_batch_size(getattr(batch, field.name))
+    else:
+        yield None
+
+pytorch_lightning.utilities.data._extract_batch_size =  _extract_batch_size
+
 def my_save(fea,path):#####fix issue: torch.save doesn't support chinese path
     dir=os.path.dirname(path)
     name=os.path.basename(path)
-    tmp_path="%s.pth"%(ttime())
-    torch.save(fea,tmp_path)
+    tmp_path="%s.npz"%(ttime())
+    mx.savez(fea,tmp_path)
     shutil.move(tmp_path,"%s/%s"%(dir,name))
 
 
@@ -81,7 +108,7 @@ class my_model_ckpt(ModelCheckpoint):
                     # torch.save(
                     my_save(
                         to_save_od,
-                        "%s/%s-e%s.ckpt"
+                        "%s/%s-e%s.npz"
                         % (
                             self.half_weights_save_dir,
                             self.exp_name,
@@ -118,16 +145,14 @@ def main(args):
     os.environ["MASTER_ADDR"]="localhost"
     trainer: Trainer = Trainer(
         max_epochs=config["train"]["epochs"],
-        accelerator="gpu" if torch.cuda.is_available() else "cpu",
+        accelerator="cpu",
         # val_check_interval=9999999999999999999999,###不要验证
         # check_val_every_n_epoch=None,
         limit_val_batches=0,
-        devices=-1 if torch.cuda.is_available() else 1,
+        devices=1,
         benchmark=False,
         fast_dev_run=False,
-        strategy = DDPStrategy(
-            process_group_backend="nccl" if platform.system() != "Windows" else "gloo"
-        ) if torch.cuda.is_available() else "auto",
+        strategy = "auto",
         precision=config["train"]["precision"],
         logger=logger,
         num_sanity_val_steps=0,
@@ -137,6 +162,7 @@ def main(args):
     model: Text2SemanticLightningModule = Text2SemanticLightningModule(
         config, output_dir
     )
+    model.model.apply(lambda x: x.astype(mx.float16))
 
     data_module: Text2SemanticDataModule = Text2SemanticDataModule(
         config,
